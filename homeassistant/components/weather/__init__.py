@@ -30,7 +30,6 @@ from homeassistant.helpers.config_validation import (  # noqa: F401
 )
 from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
-from homeassistant.helpers.temperature import display_temp as show_temp
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import (
     distance as distance_util,
@@ -175,7 +174,7 @@ class WeatherEntity(Entity):
     _attr_wind_bearing: float | str | None = None
     _attr_wind_speed: float | None = None
     _attr_wind_speed_unit: str | None = None
-    _option_units_of_measurement: str | None = None
+    _option_units_of_measurement: dict[str, str | None] | None = None
 
     async def async_internal_added_to_hass(self) -> None:
         """Call when the sensor entity is added to hass."""
@@ -189,7 +188,7 @@ class WeatherEntity(Entity):
         """Return the units this integration prefers to use for weather measurement."""
         return METRIC_UNITS if self.hass.config.units.is_metric else IMPERIAL_UNITS
 
-    def displayed_unit(self, quantity):
+    def displayed_unit(self, quantity: str) -> str:
         """Return the unit the integration will use to measure a given quantity."""
         unit = self.preferred_units[quantity]
         if self._option_units_of_measurement is not None:
@@ -274,18 +273,47 @@ class WeatherEntity(Entity):
             else PRECISION_WHOLE
         )
 
+    def convert_temperature(self, temperature: float, unit: str) -> float:
+        """Convert a temperature from a given units to the displayed units."""
+        displayed = self.displayed_unit(ATTR_WEATHER_TEMPERATURE)
+        temperature = temperature_util.convert(temperature, unit, displayed)
+        if displayed == TEMP_CELSIUS:
+            return round(temperature, 1)
+        return round(temperature)
+
+    def convert_pressure(self, pressure: float, unit: str) -> float:
+        """Convert a pressure from a given units to the displayed units."""
+        displayed = self.displayed_unit(ATTR_WEATHER_PRESSURE)
+        pressure = pressure_util.convert(pressure, unit, displayed)
+        return round(pressure, ROUNDING_PRECISION)
+
+    def convert_wind_speed(self, wind_speed: float, unit: str) -> float:
+        """Convert a wind speed from a given units to the displayed units."""
+        displayed = self.displayed_unit(ATTR_WEATHER_WIND_SPEED)
+        wind_speed = speed_util.convert(wind_speed, unit, displayed)
+        return round(wind_speed, ROUNDING_PRECISION)
+
+    def convert_visibility(self, visibility: float, unit: str) -> float:
+        """Convert a visibility from a given units to the displayed units."""
+        displayed = self.displayed_unit(ATTR_WEATHER_VISIBILITY)
+        visibility = distance_util.convert(visibility, unit, displayed)
+        return round(visibility, ROUNDING_PRECISION)
+
+    def convert_precipitation(self, precipitation: float, unit: str) -> float:
+        """Convert a precipitation from a given units to the displayed units."""
+        displayed = self.displayed_unit(ATTR_WEATHER_PRECIPITATION)
+        precipitation = distance_util.convert(precipitation, unit, displayed)
+        return round(precipitation, ROUNDING_PRECISION)
+
     @final
     @property
     def state_attributes(self):
         """Return the state attributes, converted from native units to user-configured units."""
         data = {}
-        if self.temperature is not None:
-            data[ATTR_WEATHER_TEMPERATURE] = show_temp(
-                self.hass,
-                self.temperature,
-                self.temperature_unit,
-                self.precision,
-            )
+        if (temperature := self.temperature) is not None:
+            if (unit := self.temperature_unit) is not None:
+                temperature = self.convert_temperature(temperature, unit)
+            data[ATTR_WEATHER_TEMPERATURE] = temperature
 
         if (humidity := self.humidity) is not None:
             data[ATTR_WEATHER_HUMIDITY] = round(humidity)
@@ -295,22 +323,15 @@ class WeatherEntity(Entity):
 
         if (pressure := self.pressure) is not None:
             if (unit := self.pressure_unit) is not None:
-                displayed = self.displayed_unit(ATTR_WEATHER_PRESSURE)
-                pressure = round(
-                    pressure_util.convert(pressure, unit, displayed), ROUNDING_PRECISION
-                )
-            data[ATTR_WEATHER_PRESSURE] = pressure
+                pressure = self.convert_pressure(pressure, unit)
+            data[ATTR_WEATHER_PRESSURE] = round(pressure, ROUNDING_PRECISION)
 
         if (wind_bearing := self.wind_bearing) is not None:
             data[ATTR_WEATHER_WIND_BEARING] = wind_bearing
 
         if (wind_speed := self.wind_speed) is not None:
             if (unit := self.wind_speed_unit) is not None:
-                displayed = self.displayed_unit(ATTR_WEATHER_WIND_SPEED)
-                wind_speed = round(
-                    speed_util.convert(wind_speed, unit, displayed),
-                    ROUNDING_PRECISION,
-                )
+                wind_speed = self.convert_wind_speed(wind_speed, unit)
             data[ATTR_WEATHER_WIND_SPEED] = wind_speed
 
         if (visibility := self.visibility) is not None:
@@ -326,49 +347,35 @@ class WeatherEntity(Entity):
             forecast = []
             for forecast_entry in self.forecast:
                 forecast_entry = dict(forecast_entry)
-                forecast_entry[ATTR_FORECAST_TEMP] = show_temp(
-                    self.hass,
-                    forecast_entry[ATTR_FORECAST_TEMP],
-                    self.temperature_unit,
-                    self.precision,
-                )
-                if ATTR_FORECAST_TEMP_LOW in forecast_entry:
-                    forecast_entry[ATTR_FORECAST_TEMP_LOW] = show_temp(
-                        self.hass,
-                        forecast_entry[ATTR_FORECAST_TEMP_LOW],
-                        self.temperature_unit,
-                        self.precision,
-                    )
-                if (
-                    native_pressure := forecast_entry.get(ATTR_FORECAST_PRESSURE)
-                ) is not None:
-                    if (unit := self.pressure_unit) is not None:
-                        displayed = self.displayed_unit(ATTR_WEATHER_PRESSURE)
-                        pressure = round(
-                            pressure_util.convert(native_pressure, unit, displayed),
-                            ROUNDING_PRECISION,
+                if (temp := forecast_entry.get(ATTR_FORECAST_TEMP)) is not None:
+                    if (unit := self.temperature_unit) is not None:
+                        forecast_entry[ATTR_FORECAST_TEMP] = self.convert_temperature(
+                            temp, unit
                         )
-                        forecast_entry[ATTR_FORECAST_PRESSURE] = pressure
+                if (temp := forecast_entry.get(ATTR_FORECAST_TEMP_LOW)) is not None:
+                    if (unit := self.temperature_unit) is not None:
+                        forecast_entry[
+                            ATTR_FORECAST_TEMP_LOW
+                        ] = self.convert_temperature(temp, unit)
+                if (pressure := forecast_entry.get(ATTR_FORECAST_PRESSURE)) is not None:
+                    if (unit := self.pressure_unit) is not None:
+                        forecast_entry[ATTR_FORECAST_PRESSURE] = self.convert_pressure(
+                            pressure, unit
+                        )
                 if (
-                    native_wind_speed := forecast_entry.get(ATTR_FORECAST_WIND_SPEED)
+                    wind_speed := forecast_entry.get(ATTR_FORECAST_WIND_SPEED)
                 ) is not None:
                     if (unit := self.wind_speed_unit) is not None:
-                        displayed = self.displayed_unit(ATTR_WEATHER_WIND_SPEED)
-                        wind_speed = round(
-                            speed_util.convert(native_wind_speed, unit, displayed),
-                            ROUNDING_PRECISION,
-                        )
-                        forecast_entry[ATTR_FORECAST_WIND_SPEED] = wind_speed
+                        forecast_entry[
+                            ATTR_FORECAST_WIND_SPEED
+                        ] = self.convert_wind_speed(wind_speed, unit)
                 if (
-                    native_precip := forecast_entry.get(ATTR_FORECAST_PRECIPITATION)
+                    precip := forecast_entry.get(ATTR_FORECAST_PRECIPITATION)
                 ) is not None:
                     if (unit := self.precipitation_unit) is not None:
-                        displayed = self.displayed_unit(ATTR_WEATHER_PRECIPITATION)
-                        precipitation = round(
-                            distance_util.convert(native_precip, unit, displayed),
-                            ROUNDING_PRECISION,
-                        )
-                        forecast_entry[ATTR_FORECAST_PRECIPITATION] = precipitation
+                        forecast_entry[
+                            ATTR_FORECAST_PRECIPITATION
+                        ] = self.convert_precipitation(precip, unit)
 
                 forecast.append(forecast_entry)
 
