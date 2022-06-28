@@ -216,13 +216,7 @@ async def test_none_forecast(
         ("pressure", PRESSURE_HPA, PRESSURE_INHG, 1000.0, 29.53),
         ("pressure", PRESSURE_KPA, PRESSURE_HPA, 1.234, 12.34),
         ("pressure", PRESSURE_HPA, PRESSURE_MMHG, 1000, 750),
-        (
-            "pressure",
-            PRESSURE_HPA,
-            "peer_pressure",
-            1000,
-            1000,
-        ),  # Not a supported pressure unit
+        ("pressure", PRESSURE_HPA, "peer_pressure", 1000, 1000),
     ],
 )
 async def test_custom_unit(
@@ -258,13 +252,7 @@ async def test_custom_unit(
     [
         ("pressure", PRESSURE_HPA, PRESSURE_INHG, 1000.0, 29.53),
         ("pressure", PRESSURE_HPA, PRESSURE_MMHG, 1000, 750),
-        (
-            "pressure",
-            PRESSURE_HPA,
-            "peer_pressure",
-            1000,
-            1000,
-        ),  # Not a supported pressure unit
+        ("pressure", PRESSURE_HPA, "peer_pressure", 1000, 1000),
     ],
 )
 async def test_custom_unit_change(
