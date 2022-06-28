@@ -18,10 +18,16 @@ from homeassistant.components.weather import (
 from homeassistant.const import (
     LENGTH_MILES,
     LENGTH_MILLIMETERS,
+    PRESSURE_HPA,
     PRESSURE_INHG,
+    PRESSURE_KPA,
+    PRESSURE_MMHG,
+    SPEED_KILOMETERS_PER_HOUR,
     SPEED_METERS_PER_SECOND,
+    SPEED_MILES_PER_HOUR,
     TEMP_FAHRENHEIT,
 )
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from homeassistant.util.distance import convert as convert_distance
 from homeassistant.util.pressure import convert as convert_pressure
@@ -77,11 +83,15 @@ async def test_temperature_conversion(
     assert float(forecast[ATTR_FORECAST_TEMP_LOW]) == approx(expected, rel=0.1)
 
 
-@pytest.mark.parametrize("unit_system", [IMPERIAL_SYSTEM, METRIC_SYSTEM])
+@pytest.mark.parametrize(
+    "unit_system,display_unit",
+    [(IMPERIAL_SYSTEM, PRESSURE_INHG), (METRIC_SYSTEM, PRESSURE_HPA)],
+)
 async def test_pressure_conversion(
     hass,
     enable_custom_integrations,
     unit_system,
+    display_unit,
 ):
     """Test pressure conversion."""
     hass.config.units = unit_system
@@ -94,16 +104,23 @@ async def test_pressure_conversion(
     state = hass.states.get(entity0.entity_id)
     forecast = state.attributes[ATTR_FORECAST][0]
 
-    expected = convert_pressure(native_value, native_unit, unit_system.pressure_unit)
+    expected = convert_pressure(native_value, native_unit, display_unit)
     assert float(state.attributes[ATTR_WEATHER_PRESSURE]) == approx(expected, rel=1e-2)
     assert float(forecast[ATTR_FORECAST_PRESSURE]) == approx(expected, rel=1e-2)
 
 
-@pytest.mark.parametrize("unit_system", [IMPERIAL_SYSTEM, METRIC_SYSTEM])
+@pytest.mark.parametrize(
+    "unit_system,display_unit",
+    [
+        (IMPERIAL_SYSTEM, SPEED_MILES_PER_HOUR),
+        (METRIC_SYSTEM, SPEED_KILOMETERS_PER_HOUR),
+    ],
+)
 async def test_wind_speed_conversion(
     hass,
     enable_custom_integrations,
     unit_system,
+    display_unit,
 ):
     """Test wind speed conversion."""
     hass.config.units = unit_system
@@ -117,7 +134,7 @@ async def test_wind_speed_conversion(
     state = hass.states.get(entity0.entity_id)
     forecast = state.attributes[ATTR_FORECAST][0]
 
-    expected = convert_speed(native_value, native_unit, unit_system.wind_speed_unit)
+    expected = convert_speed(native_value, native_unit, display_unit)
     assert float(state.attributes[ATTR_WEATHER_WIND_SPEED]) == approx(
         expected, rel=1e-2
     )
@@ -191,3 +208,103 @@ async def test_none_forecast(
     assert forecast[ATTR_FORECAST_PRESSURE] is None
     assert forecast[ATTR_FORECAST_WIND_SPEED] is None
     assert forecast[ATTR_FORECAST_PRECIPITATION] is None
+
+
+@pytest.mark.parametrize(
+    "attribute,state_unit,custom_unit,state_value,custom_value",
+    [
+        ("pressure", PRESSURE_HPA, PRESSURE_INHG, 1000.0, 29.53),
+        ("pressure", PRESSURE_KPA, PRESSURE_HPA, 1.234, 12.34),
+        ("pressure", PRESSURE_HPA, PRESSURE_MMHG, 1000, 750),
+        (
+            "pressure",
+            PRESSURE_HPA,
+            "peer_pressure",
+            1000,
+            1000,
+        ),  # Not a supported pressure unit
+    ],
+)
+async def test_custom_unit(
+    hass,
+    enable_custom_integrations,
+    attribute,
+    state_unit,
+    custom_unit,
+    state_value,
+    custom_value,
+):
+    """Test custom unit."""
+    entity_registry = er.async_get(hass)
+
+    entry = entity_registry.async_get_or_create("weather", "test", "very_unique")
+    entity_registry.async_update_entity_options(
+        entry.entity_id, "weather", {"units_of_measurement": {attribute: custom_unit}}
+    )
+    await hass.async_block_till_done()
+
+    entity0 = await create_entity(
+        hass,
+        unique_id="very_unique",
+        **{attribute: state_value, attribute + "_unit": state_unit},
+    )
+
+    state = hass.states.get(entity0.entity_id)
+    assert float(state.attributes[attribute]) == approx(custom_value, rel=1e-2)
+
+
+@pytest.mark.parametrize(
+    "attribute,state_unit,custom_unit,state_value,custom_value",
+    [
+        ("pressure", PRESSURE_HPA, PRESSURE_INHG, 1000.0, 29.53),
+        ("pressure", PRESSURE_HPA, PRESSURE_MMHG, 1000, 750),
+        (
+            "pressure",
+            PRESSURE_HPA,
+            "peer_pressure",
+            1000,
+            1000,
+        ),  # Not a supported pressure unit
+    ],
+)
+async def test_custom_unit_change(
+    hass,
+    enable_custom_integrations,
+    attribute,
+    state_unit,
+    custom_unit,
+    state_value,
+    custom_value,
+):
+    """Test custom unit changes are picked up."""
+    entity_registry = er.async_get(hass)
+    entity0 = await create_entity(
+        hass,
+        unique_id="very_unique",
+        **{attribute: state_value, attribute + "_unit": state_unit},
+    )
+
+    state = hass.states.get(entity0.entity_id)
+    assert float(state.attributes[attribute]) == approx(float(state_value))
+
+    entity_registry.async_update_entity_options(
+        "weather.test", "weather", {"units_of_measurement": {attribute: custom_unit}}
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity0.entity_id)
+    assert float(state.attributes[attribute]) == approx(float(custom_value), rel=1e-2)
+
+    entity_registry.async_update_entity_options(
+        "weather.test", "weather", {"units_of_measurement": {attribute: state_unit}}
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity0.entity_id)
+    assert float(state.attributes[attribute]) == approx(float(state_value))
+
+    entity_registry.async_update_entity_options("weather.test", "weather", None)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity0.entity_id)
+    assert float(state.attributes[attribute]) == approx(float(state_value))

@@ -7,8 +7,23 @@ import logging
 from typing import Final, TypedDict, final
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PRECISION_TENTHS, PRECISION_WHOLE, TEMP_CELSIUS
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_UNITS_OF_MEASUREMENT,
+    LENGTH_INCHES,
+    LENGTH_KILOMETERS,
+    LENGTH_MILES,
+    LENGTH_MILLIMETERS,
+    PRECISION_TENTHS,
+    PRECISION_WHOLE,
+    PRESSURE_HPA,
+    PRESSURE_INHG,
+    SPEED_KILOMETERS_PER_HOUR,
+    SPEED_METERS_PER_SECOND,
+    SPEED_MILES_PER_HOUR,
+    TEMP_CELSIUS,
+    TEMP_FAHRENHEIT,
+)
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.config_validation import (  # noqa: F401
     PLATFORM_SCHEMA,
     PLATFORM_SCHEMA_BASE,
@@ -17,6 +32,12 @@ from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.temperature import display_temp as show_temp
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import (
+    distance as distance_util,
+    pressure as pressure_util,
+    speed as speed_util,
+    temperature as temperature_util,
+)
 
 # mypy: allow-untyped-defs, no-check-untyped-defs
 
@@ -55,6 +76,7 @@ ATTR_WEATHER_TEMPERATURE = "temperature"
 ATTR_WEATHER_VISIBILITY = "visibility"
 ATTR_WEATHER_WIND_BEARING = "wind_bearing"
 ATTR_WEATHER_WIND_SPEED = "wind_speed"
+ATTR_WEATHER_PRECIPITATION = "precipitation"
 
 DOMAIN = "weather"
 
@@ -63,6 +85,34 @@ ENTITY_ID_FORMAT = DOMAIN + ".{}"
 SCAN_INTERVAL = timedelta(seconds=30)
 
 ROUNDING_PRECISION = 2
+
+VALID_UNITS: dict[str, tuple[str, ...]] = {
+    ATTR_WEATHER_TEMPERATURE: temperature_util.VALID_UNITS,
+    ATTR_WEATHER_PRESSURE: pressure_util.VALID_UNITS,
+    ATTR_WEATHER_VISIBILITY: (LENGTH_KILOMETERS, LENGTH_MILES),
+    ATTR_WEATHER_WIND_SPEED: (
+        SPEED_KILOMETERS_PER_HOUR,
+        SPEED_MILES_PER_HOUR,
+        SPEED_METERS_PER_SECOND,
+    ),
+    ATTR_WEATHER_PRECIPITATION: (LENGTH_MILLIMETERS, LENGTH_INCHES),
+}
+
+METRIC_UNITS = {
+    ATTR_WEATHER_TEMPERATURE: TEMP_CELSIUS,
+    ATTR_WEATHER_PRESSURE: PRESSURE_HPA,
+    ATTR_WEATHER_VISIBILITY: LENGTH_KILOMETERS,
+    ATTR_WEATHER_WIND_SPEED: SPEED_KILOMETERS_PER_HOUR,
+    ATTR_WEATHER_PRECIPITATION: LENGTH_MILLIMETERS,
+}
+
+IMPERIAL_UNITS = {
+    ATTR_WEATHER_TEMPERATURE: TEMP_FAHRENHEIT,
+    ATTR_WEATHER_PRESSURE: PRESSURE_INHG,
+    ATTR_WEATHER_VISIBILITY: LENGTH_MILES,
+    ATTR_WEATHER_WIND_SPEED: SPEED_MILES_PER_HOUR,
+    ATTR_WEATHER_PRECIPITATION: LENGTH_INCHES,
+}
 
 
 class Forecast(TypedDict, total=False):
@@ -125,6 +175,28 @@ class WeatherEntity(Entity):
     _attr_wind_bearing: float | str | None = None
     _attr_wind_speed: float | None = None
     _attr_wind_speed_unit: str | None = None
+    _option_units_of_measurement: str | None = None
+
+    async def async_internal_added_to_hass(self) -> None:
+        """Call when the sensor entity is added to hass."""
+        await super().async_internal_added_to_hass()
+        if not self.registry_entry:
+            return
+        self.async_registry_entry_updated()
+
+    @property
+    def preferred_units(self) -> dict[str, str]:
+        """Return the units this integration prefers to use for weather measurement."""
+        return METRIC_UNITS if self.hass.config.units.is_metric else IMPERIAL_UNITS
+
+    def displayed_unit(self, quantity):
+        """Return the unit the integration will use to measure a given quantity."""
+        unit = self.preferred_units[quantity]
+        if self._option_units_of_measurement is not None:
+            if opt := self._option_units_of_measurement.get(quantity):
+                if opt in VALID_UNITS[quantity]:
+                    return opt
+        return unit
 
     @property
     def temperature(self) -> float | None:
@@ -223,8 +295,9 @@ class WeatherEntity(Entity):
 
         if (pressure := self.pressure) is not None:
             if (unit := self.pressure_unit) is not None:
+                displayed = self.displayed_unit(ATTR_WEATHER_PRESSURE)
                 pressure = round(
-                    self.hass.config.units.pressure(pressure, unit), ROUNDING_PRECISION
+                    pressure_util.convert(pressure, unit, displayed), ROUNDING_PRECISION
                 )
             data[ATTR_WEATHER_PRESSURE] = pressure
 
@@ -233,16 +306,19 @@ class WeatherEntity(Entity):
 
         if (wind_speed := self.wind_speed) is not None:
             if (unit := self.wind_speed_unit) is not None:
+                displayed = self.displayed_unit(ATTR_WEATHER_WIND_SPEED)
                 wind_speed = round(
-                    self.hass.config.units.wind_speed(wind_speed, unit),
+                    speed_util.convert(wind_speed, unit, displayed),
                     ROUNDING_PRECISION,
                 )
             data[ATTR_WEATHER_WIND_SPEED] = wind_speed
 
         if (visibility := self.visibility) is not None:
             if (unit := self.visibility_unit) is not None:
+                displayed = self.displayed_unit(ATTR_WEATHER_VISIBILITY)
                 visibility = round(
-                    self.hass.config.units.length(visibility, unit), ROUNDING_PRECISION
+                    distance_util.convert(visibility, unit, displayed),
+                    ROUNDING_PRECISION,
                 )
             data[ATTR_WEATHER_VISIBILITY] = visibility
 
@@ -267,8 +343,9 @@ class WeatherEntity(Entity):
                     native_pressure := forecast_entry.get(ATTR_FORECAST_PRESSURE)
                 ) is not None:
                     if (unit := self.pressure_unit) is not None:
+                        displayed = self.displayed_unit(ATTR_WEATHER_PRESSURE)
                         pressure = round(
-                            self.hass.config.units.pressure(native_pressure, unit),
+                            pressure_util.convert(native_pressure, unit, displayed),
                             ROUNDING_PRECISION,
                         )
                         forecast_entry[ATTR_FORECAST_PRESSURE] = pressure
@@ -276,8 +353,9 @@ class WeatherEntity(Entity):
                     native_wind_speed := forecast_entry.get(ATTR_FORECAST_WIND_SPEED)
                 ) is not None:
                     if (unit := self.wind_speed_unit) is not None:
+                        displayed = self.displayed_unit(ATTR_WEATHER_WIND_SPEED)
                         wind_speed = round(
-                            self.hass.config.units.wind_speed(native_wind_speed, unit),
+                            speed_util.convert(native_wind_speed, unit, displayed),
                             ROUNDING_PRECISION,
                         )
                         forecast_entry[ATTR_FORECAST_WIND_SPEED] = wind_speed
@@ -285,10 +363,9 @@ class WeatherEntity(Entity):
                     native_precip := forecast_entry.get(ATTR_FORECAST_PRECIPITATION)
                 ) is not None:
                     if (unit := self.precipitation_unit) is not None:
+                        displayed = self.displayed_unit(ATTR_WEATHER_PRECIPITATION)
                         precipitation = round(
-                            self.hass.config.units.accumulated_precipitation(
-                                native_precip, unit
-                            ),
+                            distance_util.convert(native_precip, unit, displayed),
                             ROUNDING_PRECISION,
                         )
                         forecast_entry[ATTR_FORECAST_PRECIPITATION] = precipitation
@@ -309,3 +386,16 @@ class WeatherEntity(Entity):
     def condition(self) -> str | None:
         """Return the current condition."""
         return self._attr_condition
+
+    @callback
+    def async_registry_entry_updated(self) -> None:
+        """Run when the entity registry entry has been updated."""
+        print("registry update!")
+        assert self.registry_entry
+        if (weather_options := self.registry_entry.options.get(DOMAIN)) and (
+            custom_units := weather_options.get(CONF_UNITS_OF_MEASUREMENT)
+        ):
+            self._option_units_of_measurement = custom_units
+            return
+
+        self._option_units_of_measurement = None
